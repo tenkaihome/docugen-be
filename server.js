@@ -6,6 +6,24 @@ const multer = require('multer');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
 
+// Initialize Firebase
+const { initializeApp } = require('firebase/app');
+const { getDatabase, ref, set, get, child, remove } = require('firebase/database');
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAQKorsyd689HNAtggj8-5tTyktwV_BAr4",
+  authDomain: "docugen-676bf.firebaseapp.com",
+  databaseURL: "https://docugen-676bf-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "docugen-676bf",
+  storageBucket: "docugen-676bf.firebasestorage.app",
+  messagingSenderId: "631881183468",
+  appId: "1:631881183468:web:5672783e0c29c0984ef5c9",
+  measurementId: "G-188PPF8BYY"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+
 const app = express();
 const PORT = 3001;
 
@@ -21,25 +39,8 @@ app.use(express.json());
 const FRONTEND_TEMPLATES_DIR = path.join(__dirname, '..', 'docugen-fe', 'public', 'templates');
 app.use('/templates', express.static(FRONTEND_TEMPLATES_DIR));
 
-// Configure upload directory for custom templates
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR);
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOADS_DIR);
-  },
-  filename: (req, file, cb) => {
-    cb(null, `custom-${Date.now()}-${file.originalname}`);
-  }
-});
-const upload = multer({ storage });
-
-// Store the path of the last uploaded custom template in memory
-let lastCustomTemplatePath = '';
-let lastCustomTemplateOriginalName = '';
+// Configure upload storage (use memoryStorage for serverless/Vercel compatibility)
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Helper to capitalize keys
 const getUppercaseKeys = (obj) => {
@@ -130,6 +131,11 @@ const getVnSectionKeys = (sec) => {
     'Số Đề Nghị': sec.so_de_nghi,
     'SỐ PHIẾU': sec.so_de_nghi,
     'SỐ ĐỀ NGHỊ': sec.so_de_nghi,
+    'Số': sec.so_de_nghi,
+    'số': sec.so_de_nghi,
+    'SỐ': sec.so_de_nghi,
+    'so': sec.so_de_nghi,
+    'SO': sec.so_de_nghi,
 
     'Khách hàng': sec.ten_khach_hang,
     'Khách Hàng': sec.ten_khach_hang,
@@ -172,36 +178,110 @@ const getVnSectionKeys = (sec) => {
 
 /**
  * GET /api/templates
- * Returns available word templates.
+ * Returns available word templates from Firebase Realtime DB.
+ * Omit fileBase64 for optimal network load.
  */
-app.get('/api/templates', (req, res) => {
-  const templates = [];
-  res.json(templates);
+app.get('/api/templates', async (req, res) => {
+  try {
+    const dbRef = ref(db);
+    const snapshot = await get(child(dbRef, 'templates'));
+    if (snapshot.exists()) {
+      const data = snapshot.val();
+      const list = Object.values(data).map(item => {
+        const { fileBase64, ...rest } = item;
+        return rest;
+      });
+      res.json(list);
+    } else {
+      res.json([]);
+    }
+  } catch (error) {
+    console.error('Failed to fetch templates from Firebase:', error);
+    res.status(500).json({ message: 'Lỗi khi tải danh sách mẫu từ Firebase' });
+  }
 });
 
 /**
  * POST /api/templates/upload
- * Handles custom template file uploads.
+ * Uploads a template file and saves details (with base64 content) to Firebase Database.
  */
-app.post('/api/templates/upload', upload.single('template'), (req, res) => {
+app.post('/api/templates/upload', upload.single('template'), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: 'Không tìm thấy file mẫu nào được đính kèm.' });
+    return res.status(400).json({ message: 'Vui lòng upload tệp tin mẫu Word.' });
   }
 
-  lastCustomTemplatePath = req.file.path;
-  lastCustomTemplateOriginalName = req.file.originalname;
+  try {
+    const templateContent = req.file.buffer;
+    const zip = new PizZip(templateContent);
+    
+    // Extract variables schema from XML
+    let schema = [];
+    try {
+      const docXml = zip.files['word/document.xml'].asText();
+      const matches = docXml.match(/\{([^{}]+)\}/g) || [];
+      const variables = matches.map(m => {
+        const clean = m.replace(/<[^>]+>/g, '').replace(/[\{\}]/g, '').trim();
+        return clean;
+      }).filter(v => /^[a-zA-Z0-9_ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠàáâãèéêìíòóôõùúăđĩũơƯĂÂĐĨŨƠưăâđĩũơ\s-]+$/.test(v));
+      
+      schema = Array.from(new Set(variables));
+    } catch (parseErr) {
+      console.warn('Failed to parse template schema:', parseErr);
+    }
 
-  res.json({
-    url: `http://localhost:${PORT}/templates/custom`,
-    schema: ['ten_hang', 'ma_hang', 'so_luong', 'ten_khach_hang', 'so_de_nghi']
-  });
+    // Convert to base64 string
+    const base64String = templateContent.toString('base64');
+    const templateId = `custom-${Date.now()}`;
+    const templateData = {
+      id: templateId,
+      name: req.file.originalname.replace(/\.docx$/i, ''),
+      fileBase64: base64String,
+      mappingSchema: schema
+    };
+
+    await set(ref(db, `templates/${templateId}`), templateData);
+
+    res.json({
+      url: '',
+      schema: schema,
+      template: {
+        id: templateId,
+        name: templateData.name,
+        mappingSchema: schema
+      }
+    });
+  } catch (err) {
+    console.error('Upload template failed:', err);
+    res.status(500).json({ message: `Không thể tải lên tệp mẫu: ${err.message}` });
+  }
+});
+
+/**
+ * DELETE /api/templates/:id
+ * Deletes a template from Firebase Database.
+ */
+app.delete('/api/templates/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const templateRef = ref(db, `templates/${id}`);
+    const snapshot = await get(templateRef);
+    if (snapshot.exists()) {
+      await remove(templateRef);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ message: 'Không tìm thấy mẫu cần xóa' });
+    }
+  } catch (error) {
+    console.error('Failed to delete template from Firebase:', error);
+    res.status(500).json({ message: 'Lỗi khi xóa mẫu khỏi Firebase' });
+  }
 });
 
 /**
  * POST /api/generate
  * Server-side docx template compilation.
  */
-app.post('/api/generate', upload.single('template'), (req, res) => {
+app.post('/api/generate', upload.single('template'), async (req, res) => {
   let { templateId, data, section } = req.body;
 
   try {
@@ -212,26 +292,43 @@ app.post('/api/generate', upload.single('template'), (req, res) => {
       section = JSON.parse(section);
     }
 
-    let templatePath = '';
+    let templateContent;
 
     if (templateId === 'custom' || (templateId && templateId.startsWith('custom-'))) {
       if (req.file) {
-        templatePath = req.file.path;
+        templateContent = req.file.buffer;
+      } else if (templateId && templateId.startsWith('custom-')) {
+        // Fetch from Firebase Realtime DB (base64 string)
+        try {
+          const snapshot = await get(ref(db, `templates/${templateId}`));
+          if (snapshot.exists()) {
+            const template = snapshot.val();
+            if (template.fileBase64) {
+              templateContent = Buffer.from(template.fileBase64, 'base64');
+            } else {
+              return res.status(400).json({ message: `Tệp mẫu ${templateId} thiếu nội dung dữ liệu base64.` });
+            }
+          } else {
+            return res.status(404).json({ message: `Không tìm thấy tệp mẫu ${templateId} trên Firebase.` });
+          }
+        } catch (fbErr) {
+          console.error('Failed to fetch template from Firebase DB:', fbErr);
+          return res.status(500).json({ message: `Lỗi tải tệp mẫu từ Firebase: ${fbErr.message}` });
+        }
       } else {
-        templatePath = lastCustomTemplatePath;
+        templateContent = null;
       }
-      if (!templatePath) {
+
+      if (!templateContent) {
         return res.status(400).json({ message: 'Vui lòng upload tệp tin mẫu Word.' });
       }
     } else {
-      templatePath = path.join(FRONTEND_TEMPLATES_DIR, `${templateId}.docx`);
+      const templatePath = path.join(FRONTEND_TEMPLATES_DIR, `${templateId}.docx`);
+      if (!fs.existsSync(templatePath)) {
+        return res.status(404).json({ message: `Không tìm thấy file mẫu biểu tại đường dẫn: ${templatePath}` });
+      }
+      templateContent = fs.readFileSync(templatePath);
     }
-
-    if (!fs.existsSync(templatePath)) {
-      return res.status(404).json({ message: `Không tìm thấy file mẫu biểu tại đường dẫn: ${templatePath}` });
-    }
-
-    const templateContent = fs.readFileSync(templatePath);
     const zip = new PizZip(templateContent);
     
     let doc;
@@ -324,7 +421,36 @@ app.post('/api/generate', upload.single('template'), (req, res) => {
   }
 });
 
+/**
+ * GET /api/templates/:id/download
+ * Downloads the original template document by ID.
+ */
+app.get('/api/templates/:id/download', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const snapshot = await get(ref(db, `templates/${id}`));
+    if (snapshot.exists()) {
+      const template = snapshot.val();
+      if (template.fileBase64) {
+        const buffer = Buffer.from(template.fileBase64, 'base64');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="${template.name}.docx"`);
+        res.send(buffer);
+      } else {
+        res.status(400).json({ message: 'Mẫu biểu này không có dữ liệu tệp tin đính kèm.' });
+      }
+    } else {
+      res.status(404).json({ message: 'Không tìm thấy mẫu biểu được yêu cầu.' });
+    }
+  } catch (error) {
+    console.error('Failed to download template:', error);
+    res.status(500).json({ message: 'Lỗi tải tệp mẫu từ Firebase' });
+  }
+});
+
 // Start Express Server
 app.listen(PORT, () => {
   console.log(`[DocuGen Server] running on http://localhost:${PORT}`);
 });
+
+module.exports = app;
