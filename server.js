@@ -28,8 +28,18 @@ const app = express();
 const PORT = 3001;
 
 // Configure CORS
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://docugen-fe.vercel.app'
+];
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 
