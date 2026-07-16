@@ -114,7 +114,7 @@ const extendWithVnKeys = (item) => {
 
 const parseDateFields = (dateStr) => {
   const match = String(dateStr || '').match(/ngày\s*(\d+)\s*tháng\s*(\d+)\s*năm\s*(\d+)/i) ||
-                String(dateStr || '').match(/ngay\s*(\d+)\s*thang\s*(\d+)\s*nam\s*(\d+)/i);
+    String(dateStr || '').match(/ngay\s*(\d+)\s*thang\s*(\d+)\s*nam\s*(\d+)/i);
   if (match) {
     return {
       ngay: match[1],
@@ -223,7 +223,7 @@ app.post('/api/templates/upload', upload.single('template'), async (req, res) =>
   try {
     const templateContent = req.file.buffer;
     const zip = new PizZip(templateContent);
-    
+
     // Extract variables schema from XML
     let schema = [];
     try {
@@ -233,7 +233,7 @@ app.post('/api/templates/upload', upload.single('template'), async (req, res) =>
         const clean = m.replace(/<[^>]+>/g, '').replace(/[\{\}]/g, '').trim();
         return clean;
       }).filter(v => /^[a-zA-Z0-9_ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠàáâãèéêìíòóôõùúăđĩũơƯĂÂĐĨŨƠưăâđĩũơ\s-]+$/.test(v));
-      
+
       schema = Array.from(new Set(variables));
     } catch (parseErr) {
       console.warn('Failed to parse template schema:', parseErr);
@@ -340,7 +340,7 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
       templateContent = fs.readFileSync(templatePath);
     }
     const zip = new PizZip(templateContent);
-    
+
     let doc;
     try {
       doc = new Docxtemplater(zip, {
@@ -348,8 +348,8 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
         linebreaks: true,
       });
     } catch (zipErr) {
-      return res.status(400).json({ 
-        message: 'Không thể nhận diện định dạng file mẫu Word. Vui lòng đảm bảo tệp mẫu là tệp Word (.docx) hợp lệ.' 
+      return res.status(400).json({
+        message: 'Không thể nhận diện định dạng file mẫu Word. Vui lòng đảm bảo tệp mẫu là tệp Word (.docx) hợp lệ.'
       });
     }
 
@@ -402,7 +402,7 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
       nguoi_de_nghi: sec.nguoi_de_nghi || '',
       ...uppercaseSection,
       ...vnSection,
-      
+
       // Fallback fields at root level for templates without loops
       ...rootItem,
       ...uppercaseRootItem,
@@ -430,7 +430,7 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     res.status(500).json({ message: `Lỗi biên dịch trên Server: ${errorMessage}` });
   }
 });
-
+/**dark */
 /**
  * GET /api/templates/:id/download
  * Downloads the original template document by ID.
