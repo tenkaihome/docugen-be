@@ -130,6 +130,106 @@ const parseDateFields = (dateStr) => {
   };
 };
 
+const parseVietnameseDate = (dateStr) => {
+  if (!dateStr) return null;
+  const clean = String(dateStr).trim();
+  if (!clean) return null;
+
+  // Check if it is ISO format or serialized date
+  if (clean.includes('T') && !isNaN(Date.parse(clean))) {
+    return new Date(clean);
+  }
+
+  // Check if there are dots (e.g. 11.10.25)
+  if (clean.includes('.')) {
+    const parts = clean.split('.');
+    if (parts.length === 3) {
+      const day = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10);
+      let year = parseInt(parts[2], 10);
+      if (year < 100) year += 2000;
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return new Date(year, month - 1, day);
+      }
+    }
+  }
+
+  // Fallback to standard JS Date parsing
+  const parsed = Date.parse(clean);
+  if (!isNaN(parsed)) {
+    return new Date(parsed);
+  }
+
+  // Check if there are slashes (e.g. 25/03/2026)
+  if (clean.includes('/')) {
+    const parts = clean.split('/');
+    if (parts.length === 3) {
+      const day = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10);
+      let year = parseInt(parts[2], 10);
+      if (year < 100) year += 2000;
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return new Date(year, month - 1, day);
+      }
+    }
+  }
+
+  return null;
+};
+
+const calculateNgayXuatXuong = (item, sec) => {
+  const companyName = sec.ten_khach_hang || sec.companyName || '';
+  const companyId = sec.companyId || '';
+  const isNamHaThanh = 
+    companyName.toUpperCase().includes('NAM HÀ THÀNH') || 
+    companyName.toUpperCase().includes('NAM HA THANH') || 
+    companyId.includes('nam-ha-thanh');
+
+  const rawDateStr = item.hd_xlt_ngay || '';
+  const parsedDate = parseVietnameseDate(rawDateStr);
+
+  if (!parsedDate) {
+    return parseDateFields(sec.ngay_de_nghi || '');
+  }
+
+  if (!isNamHaThanh) {
+    parsedDate.setDate(parsedDate.getDate() - 3);
+  }
+
+  return {
+    ngay: String(parsedDate.getDate()).padStart(2, '0'),
+    thang: String(parsedDate.getMonth() + 1).padStart(2, '0'),
+    nam: String(parsedDate.getFullYear())
+  };
+};
+
+const formatSoDocx = (soDeNghi, hdXltSo) => {
+  const cleanSoDeNghi = String(soDeNghi || '').trim();
+  const parts = cleanSoDeNghi.split('-');
+  const firstPart = parts[0] ? parts[0].trim() : '';
+  const cleanHdXltSo = String(hdXltSo || '').trim();
+
+  if (firstPart && cleanHdXltSo) {
+    return `${firstPart}/${cleanHdXltSo}`;
+  } else if (cleanHdXltSo) {
+    return cleanHdXltSo;
+  } else {
+    return firstPart;
+  }
+};
+
+const matchPrefix = (maHang, mappings) => {
+  if (!maHang || !mappings) return null;
+  const cleanMaHang = String(maHang).trim().toUpperCase();
+  const prefixes = Object.keys(mappings).sort((a, b) => b.length - a.length);
+  for (const prefix of prefixes) {
+    if (cleanMaHang.startsWith(prefix.trim().toUpperCase())) {
+      return mappings[prefix];
+    }
+  }
+  return null;
+};
+
 // Helper to map Vietnamese variations for parent sections
 const getVnSectionKeys = (sec) => {
   if (!sec) return {};
@@ -292,7 +392,7 @@ app.delete('/api/templates/:id', async (req, res) => {
  * Server-side docx template compilation.
  */
 app.post('/api/generate', upload.single('template'), async (req, res) => {
-  let { templateId, data, section } = req.body;
+  let { templateId, data, section, productNameMappings } = req.body;
 
   try {
     if (typeof data === 'string') {
@@ -300,6 +400,9 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     }
     if (typeof section === 'string') {
       section = JSON.parse(section);
+    }
+    if (typeof productNameMappings === 'string') {
+      productNameMappings = JSON.parse(productNameMappings);
     }
 
     let templateContent;
@@ -340,6 +443,11 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
       templateContent = fs.readFileSync(templatePath);
     }
     const zip = new PizZip(templateContent);
+    if (!zip.files['word/document.xml']) {
+      return res.status(400).json({
+        message: 'Không thể nhận diện định dạng file mẫu Word. Vui lòng đảm bảo tệp mẫu là tệp Word (.docx) hợp lệ.'
+      });
+    }
 
     let doc;
     try {
@@ -347,9 +455,14 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
         paragraphLoop: true,
         linebreaks: true,
       });
-    } catch (zipErr) {
+    } catch (compileErr) {
+      console.error('Docxtemplater compilation failed:', compileErr);
+      let details = compileErr.message;
+      if (compileErr.properties && compileErr.properties.errors) {
+        details = compileErr.properties.errors.map(e => e.message).join(', ');
+      }
       return res.status(400).json({
-        message: 'Không thể nhận diện định dạng file mẫu Word. Vui lòng đảm bảo tệp mẫu là tệp Word (.docx) hợp lệ.'
+        message: `Lỗi cấu trúc biểu mẫu Word: ${details}`
       });
     }
 
@@ -369,6 +482,45 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     const items = itemsToRender.map((item, idx) => {
       const uppercaseItem = getUppercaseKeys(item);
       const vnItemKeys = extendWithVnKeys(item);
+
+      const calculatedDate = calculateNgayXuatXuong(item, sec);
+      const calculatedSo = formatSoDocx(sec.so_de_nghi, item.hd_xlt_so);
+
+      const itemDateAndSoFields = {
+        'Ngày': calculatedDate.ngay,
+        'Ngay': calculatedDate.ngay,
+        'NGÀY': calculatedDate.ngay,
+        'NGAY': calculatedDate.ngay,
+        'Tháng': calculatedDate.thang,
+        'Thang': calculatedDate.thang,
+        'THÁNG': calculatedDate.thang,
+        'THANG': calculatedDate.thang,
+        'Năm': calculatedDate.nam,
+        'Nam': calculatedDate.nam,
+        'NĂM': calculatedDate.nam,
+        'NAM': calculatedDate.nam,
+
+        'Số': calculatedSo,
+        'số': calculatedSo,
+        'SỐ': calculatedSo,
+        'so': calculatedSo,
+        'SO': calculatedSo,
+      };
+
+      let itemProductFields = {};
+      const mappedProductName = matchPrefix(item.ma_hang, productNameMappings);
+      if (mappedProductName) {
+        itemProductFields = {
+          'Tên sản phẩm': mappedProductName,
+          'Tên Sản Phẩm': mappedProductName,
+          'TÊN SẢN PHẨM': mappedProductName,
+          'Tên sản phẩm / Product Name': mappedProductName,
+          'Tên sản phẩm/Product Name': mappedProductName,
+          'Product Name': mappedProductName,
+          'PRODUCT NAME': mappedProductName,
+        };
+      }
+
       return {
         ...item,
         ...uppercaseItem,
@@ -381,6 +533,8 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
         nguoi_de_nghi: sec.nguoi_de_nghi || item.nguoi_de_nghi || '',
         ...uppercaseSection,
         ...getVnSectionKeys(sec),
+        ...itemDateAndSoFields,
+        ...itemProductFields,
         page_break: idx < itemsToRender.length - 1,
         page_break_xml: idx < itemsToRender.length - 1 ? '<w:br w:type="page"/>' : '',
       };
@@ -390,6 +544,47 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     const uppercaseRootItem = getUppercaseKeys(rootItem);
     const vnRootItem = extendWithVnKeys(rootItem);
     const vnSection = getVnSectionKeys(sec);
+
+    // Fallback date and number for root level (based on the first item)
+    let rootDateAndSoFields = {};
+    let rootProductFields = {};
+    if (rootItem && Object.keys(rootItem).length > 0) {
+      const firstItemCalculatedDate = calculateNgayXuatXuong(rootItem, sec);
+      const firstItemCalculatedSo = formatSoDocx(sec.so_de_nghi, rootItem.hd_xlt_so);
+      rootDateAndSoFields = {
+        'Ngày': firstItemCalculatedDate.ngay,
+        'Ngay': firstItemCalculatedDate.ngay,
+        'NGÀY': firstItemCalculatedDate.ngay,
+        'NGAY': firstItemCalculatedDate.ngay,
+        'Tháng': firstItemCalculatedDate.thang,
+        'Thang': firstItemCalculatedDate.thang,
+        'THÁNG': firstItemCalculatedDate.thang,
+        'THANG': firstItemCalculatedDate.thang,
+        'Năm': firstItemCalculatedDate.nam,
+        'Nam': firstItemCalculatedDate.nam,
+        'NĂM': firstItemCalculatedDate.nam,
+        'NAM': firstItemCalculatedDate.nam,
+
+        'Số': firstItemCalculatedSo,
+        'số': firstItemCalculatedSo,
+        'SỐ': firstItemCalculatedSo,
+        'so': firstItemCalculatedSo,
+        'SO': firstItemCalculatedSo,
+      };
+
+      const rootMappedProductName = matchPrefix(rootItem.ma_hang, productNameMappings);
+      if (rootMappedProductName) {
+        rootProductFields = {
+          'Tên sản phẩm': rootMappedProductName,
+          'Tên Sản Phẩm': rootMappedProductName,
+          'TÊN SẢN PHẨM': rootMappedProductName,
+          'Tên sản phẩm / Product Name': rootMappedProductName,
+          'Tên sản phẩm/Product Name': rootMappedProductName,
+          'Product Name': rootMappedProductName,
+          'PRODUCT NAME': rootMappedProductName,
+        };
+      }
+    }
 
     // Compile and render
     doc.render({
@@ -402,11 +597,13 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
       nguoi_de_nghi: sec.nguoi_de_nghi || '',
       ...uppercaseSection,
       ...vnSection,
+      ...rootDateAndSoFields,
 
       // Fallback fields at root level for templates without loops
       ...rootItem,
       ...uppercaseRootItem,
       ...vnRootItem,
+      ...rootProductFields,
     });
 
     const buffer = doc.getZip().generate({
