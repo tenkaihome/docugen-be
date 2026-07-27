@@ -9,6 +9,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const crypto = require('crypto');
 const os = require('os');
+const axios = require('axios');
 const execPromise = util.promisify(exec);
 
 // Initialize Firebase
@@ -57,8 +58,30 @@ app.use('/templates', express.static(FRONTEND_TEMPLATES_DIR));
 // Configure upload storage (use memoryStorage for serverless/Vercel compatibility)
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Helper to convert legacy .doc file to modern .docx using MS Word COM
+// Initialize ConvertAPI with secret key if available
+const convertapi = require('convertapi')(process.env.CONVERTAPI_SECRET || '');
+
+// Helper to convert legacy .doc file to modern .docx using ConvertAPI (online) or MS Word COM (local fallback)
 async function convertDocToDocx(docBuffer) {
+  if (process.env.CONVERTAPI_SECRET) {
+    console.log('[DocuGen Server] Converting .doc to .docx using ConvertAPI...');
+    try {
+      const result = await convertapi.convert('docx', {
+        File: {
+          value: docBuffer,
+          name: 'temp_doc.doc'
+        }
+      }, 'doc');
+      
+      const downloadResponse = await axios.get(result.file.url, { responseType: 'arraybuffer' });
+      return Buffer.from(downloadResponse.data);
+    } catch (err) {
+      console.error('[DocuGen Server] ConvertAPI conversion failed:', err);
+      throw new Error(`Lỗi chuyển đổi file qua ConvertAPI: ${err.message}`);
+    }
+  }
+
+  // Fallback to local MS Word COM Object
   const tempId = crypto.randomBytes(16).toString('hex');
   const tempDocPath = path.join(os.tmpdir(), `temp_${tempId}.doc`);
   const tempDocxPath = path.join(os.tmpdir(), `temp_${tempId}.docx`);
@@ -81,8 +104,8 @@ async function convertDocToDocx(docBuffer) {
     const docxBuffer = fs.readFileSync(tempDocxPath);
     return docxBuffer;
   } catch (err) {
-    console.error('[DocuGen Server] Legacy doc-to-docx conversion failed:', err);
-    throw new Error(`Lỗi chuyển đổi file .doc sang .docx (Yêu cầu MS Word trên máy): ${err.message}`);
+    console.error('[DocuGen Server] Local MS Word conversion failed:', err);
+    throw new Error(`Lỗi chuyển đổi file .doc sang .docx (Yêu cầu MS Word trên máy hoặc cấu hình CONVERTAPI_SECRET): ${err.message}`);
   } finally {
     // Clean up temporary files
     if (fs.existsSync(tempDocPath)) {
