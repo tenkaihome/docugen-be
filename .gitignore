@@ -1,0 +1,5 @@
+node_modules/
+uploads/
+temp_*.doc
+temp_*.docx
+.env
