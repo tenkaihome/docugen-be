@@ -5,6 +5,10 @@ const fs = require('fs');
 const multer = require('multer');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
+const { exec } = require('child_process');
+const util = require('util');
+const crypto = require('crypto');
+const execPromise = util.promisify(exec);
 
 // Initialize Firebase
 const { initializeApp } = require('firebase/app');
@@ -51,6 +55,43 @@ app.use('/templates', express.static(FRONTEND_TEMPLATES_DIR));
 
 // Configure upload storage (use memoryStorage for serverless/Vercel compatibility)
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Helper to convert legacy .doc file to modern .docx using MS Word COM
+async function convertDocToDocx(docBuffer) {
+  const tempId = crypto.randomBytes(16).toString('hex');
+  const tempDocPath = path.join(__dirname, `temp_${tempId}.doc`);
+  const tempDocxPath = path.join(__dirname, `temp_${tempId}.docx`);
+
+  try {
+    // Write docBuffer to temporary .doc file
+    fs.writeFileSync(tempDocPath, docBuffer);
+
+    // PowerShell script to convert using MS Word
+    const psCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${tempDocPath}'); $doc.SaveAs('${tempDocxPath}', 16); $doc.Close() } finally { $word.Quit() }"`;
+
+    console.log('[DocuGen Server] Running PowerShell conversion from .doc to .docx...');
+    await execPromise(psCommand);
+
+    if (!fs.existsSync(tempDocxPath)) {
+      throw new Error('PowerShell conversion completed but the output .docx file was not found.');
+    }
+
+    // Read converted docx back
+    const docxBuffer = fs.readFileSync(tempDocxPath);
+    return docxBuffer;
+  } catch (err) {
+    console.error('[DocuGen Server] Legacy doc-to-docx conversion failed:', err);
+    throw new Error(`Lỗi chuyển đổi file .doc sang .docx (Yêu cầu MS Word trên máy): ${err.message}`);
+  } finally {
+    // Clean up temporary files
+    if (fs.existsSync(tempDocPath)) {
+      try { fs.unlinkSync(tempDocPath); } catch (e) {}
+    }
+    if (fs.existsSync(tempDocxPath)) {
+      try { fs.unlinkSync(tempDocxPath); } catch (e) {}
+    }
+  }
+}
 
 // Helper to capitalize keys
 const getUppercaseKeys = (obj) => {
@@ -321,7 +362,14 @@ app.post('/api/templates/upload', upload.single('template'), async (req, res) =>
   }
 
   try {
-    const templateContent = req.file.buffer;
+    let templateContent = req.file.buffer;
+    let originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+
+    if (originalName.toLowerCase().endsWith('.doc')) {
+      templateContent = await convertDocToDocx(templateContent);
+      originalName = originalName.slice(0, -4) + '.docx';
+    }
+
     const zip = new PizZip(templateContent);
 
     // Extract variables schema from XML
@@ -339,12 +387,11 @@ app.post('/api/templates/upload', upload.single('template'), async (req, res) =>
       console.warn('Failed to parse template schema:', parseErr);
     }
 
-    // Convert to base64 string
     const base64String = templateContent.toString('base64');
     const templateId = `custom-${Date.now()}`;
     const templateData = {
       id: templateId,
-      name: req.file.originalname.replace(/\.docx$/i, ''),
+      name: originalName.replace(/\.docx$/i, ''),
       fileBase64: base64String,
       mappingSchema: schema
     };
@@ -410,6 +457,9 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     if (templateId === 'custom' || (templateId && templateId.startsWith('custom-'))) {
       if (req.file) {
         templateContent = req.file.buffer;
+        if (req.file.originalname.toLowerCase().endsWith('.doc')) {
+          templateContent = await convertDocToDocx(templateContent);
+        }
       } else if (templateId && templateId.startsWith('custom-')) {
         // Fetch from Firebase Realtime DB (base64 string)
         try {
