@@ -63,33 +63,26 @@ const convertapi = require('convertapi')(process.env.CONVERTAPI_SECRET || '');
 
 // Helper to convert legacy .doc file to modern .docx using ConvertAPI (online) or MS Word COM (local fallback)
 async function convertDocToDocx(docBuffer) {
-  if (process.env.CONVERTAPI_SECRET) {
-    console.log('[DocuGen Server] Converting .doc to .docx using ConvertAPI...');
-    try {
-      const result = await convertapi.convert('docx', {
-        File: {
-          value: docBuffer,
-          name: 'temp_doc.doc'
-        }
-      }, 'doc');
-      
-      const downloadResponse = await axios.get(result.file.url, { responseType: 'arraybuffer' });
-      return Buffer.from(downloadResponse.data);
-    } catch (err) {
-      console.error('[DocuGen Server] ConvertAPI conversion failed:', err);
-      throw new Error(`Lỗi chuyển đổi file qua ConvertAPI: ${err.message}`);
-    }
-  }
-
-  // Fallback to local MS Word COM Object
   const tempId = crypto.randomBytes(16).toString('hex');
-  const tempDocPath = path.join(os.tmpdir(), `temp_${tempId}.doc`);
-  const tempDocxPath = path.join(os.tmpdir(), `temp_${tempId}.docx`);
+  const tempDocPath = path.join(os.tmpdir(), `temp_${tempId}.doc`).replace(/\\/g, '/');
+  const tempDocxPath = path.join(os.tmpdir(), `temp_${tempId}.docx`).replace(/\\/g, '/');
 
   try {
     // Write docBuffer to temporary .doc file
     fs.writeFileSync(tempDocPath, docBuffer);
 
+    if (process.env.CONVERTAPI_SECRET) {
+      console.log('[DocuGen Server] Converting .doc to .docx using ConvertAPI...');
+      const result = await convertapi.convert('docx', {
+        File: tempDocPath
+      }, 'doc');
+      
+      await result.file.save(tempDocxPath);
+      const docxBuffer = fs.readFileSync(tempDocxPath);
+      return docxBuffer;
+    }
+
+    // Fallback to local MS Word COM Object (only works on local Windows machines)
     // PowerShell script to convert using MS Word
     const psCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${tempDocPath}'); $doc.SaveAs('${tempDocxPath}', 16); $doc.Close() } finally { $word.Quit() }"`;
 
@@ -104,8 +97,8 @@ async function convertDocToDocx(docBuffer) {
     const docxBuffer = fs.readFileSync(tempDocxPath);
     return docxBuffer;
   } catch (err) {
-    console.error('[DocuGen Server] Local MS Word conversion failed:', err);
-    throw new Error(`Lỗi chuyển đổi file .doc sang .docx (Yêu cầu MS Word trên máy hoặc cấu hình CONVERTAPI_SECRET): ${err.message}`);
+    console.error('[DocuGen Server] doc-to-docx conversion failed:', err);
+    throw new Error(`Lỗi chuyển đổi file .doc sang .docx: ${err.message}`);
   } finally {
     // Clean up temporary files
     if (fs.existsSync(tempDocPath)) {
