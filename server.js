@@ -452,6 +452,33 @@ app.delete('/api/templates/:id', async (req, res) => {
 });
 
 /**
+ * GET /api/templates/:id/download
+ * Downloads a template from Firebase Database (base64 decoded).
+ */
+app.get('/api/templates/:id/download', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const snapshot = await get(ref(db, `templates/${id}`));
+    if (snapshot.exists()) {
+      const template = snapshot.val();
+      if (template.fileBase64) {
+        const fileBuffer = Buffer.from(template.fileBase64, 'base64');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(template.name)}.docx"`);
+        return res.send(fileBuffer);
+      } else {
+        return res.status(404).json({ message: 'Tệp mẫu không có nội dung file.' });
+      }
+    } else {
+      return res.status(404).json({ message: 'Không tìm thấy mẫu biểu.' });
+    }
+  } catch (error) {
+    console.error('Failed to download template:', error);
+    res.status(500).json({ message: 'Lỗi khi tải xuống tệp mẫu' });
+  }
+});
+
+/**
  * POST /api/generate
  * Server-side docx template compilation.
  */
