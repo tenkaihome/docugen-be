@@ -8,6 +8,7 @@ const Docxtemplater = require('docxtemplater');
 const { exec } = require('child_process');
 const util = require('util');
 const crypto = require('crypto');
+const os = require('os');
 const execPromise = util.promisify(exec);
 
 // Initialize Firebase
@@ -59,8 +60,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Helper to convert legacy .doc file to modern .docx using MS Word COM
 async function convertDocToDocx(docBuffer) {
   const tempId = crypto.randomBytes(16).toString('hex');
-  const tempDocPath = path.join(__dirname, `temp_${tempId}.doc`);
-  const tempDocxPath = path.join(__dirname, `temp_${tempId}.docx`);
+  const tempDocPath = path.join(os.tmpdir(), `temp_${tempId}.doc`);
+  const tempDocxPath = path.join(os.tmpdir(), `temp_${tempId}.docx`);
 
   try {
     // Write docBuffer to temporary .doc file
