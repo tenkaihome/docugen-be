@@ -262,18 +262,7 @@ const calculateNgayXuatXuong = (item, sec) => {
 };
 
 const formatSoDocx = (soDeNghi, hdXltSo) => {
-  const cleanSoDeNghi = String(soDeNghi || '').trim();
-  const parts = cleanSoDeNghi.split('-');
-  const firstPart = parts[0] ? parts[0].trim() : '';
-  const cleanHdXltSo = String(hdXltSo || '').trim();
-
-  if (firstPart && cleanHdXltSo) {
-    return `${firstPart}/${cleanHdXltSo}`;
-  } else if (cleanHdXltSo) {
-    return cleanHdXltSo;
-  } else {
-    return firstPart;
-  }
+  return String(hdXltSo || '').trim();
 };
 
 const matchPrefix = (maHang, mappings) => {
@@ -320,6 +309,11 @@ const getVnSectionKeys = (sec) => {
     'Tên công trình': sec.ten_cong_trinh,
     'Tên Công Trình': sec.ten_cong_trinh,
     'TÊN CÔNG TRÌNH': sec.ten_cong_trinh,
+    'Công trình': sec.ten_cong_trinh,
+    'công trình': sec.ten_cong_trinh,
+    'CÔNG TRÌNH': sec.ten_cong_trinh,
+    'cong trinh': sec.ten_cong_trinh,
+    'CONG TRINH': sec.ten_cong_trinh,
 
     'Ngày đề nghị': sec.ngay_de_nghi,
     'Ngày Đề Nghị': sec.ngay_de_nghi,
