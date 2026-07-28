@@ -24,6 +24,7 @@ try {
     ten_cong_trinh: 'DỰ ÁN: GLICO NEW OFFICE',
     ngay_de_nghi: 'TP, HCM ngày 03 tháng 07 năm 2026',
     nguoi_de_nghi: 'Nguyễn Thị Điệp',
+    dia_chi: '123 Đường Thử Nghiệm, Quận 1, TP. HCM',
     companyName: 'CTY CỔ PHẦN NAM HÀ THÀNH PLASTIC'
   };
 
