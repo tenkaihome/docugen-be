@@ -15,6 +15,9 @@ try {
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,
+    nullGetter(part) {
+      return "";
+    }
   });
 
   const sec = {

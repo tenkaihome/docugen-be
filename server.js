@@ -550,6 +550,9 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
       doc = new Docxtemplater(zip, {
         paragraphLoop: true,
         linebreaks: true,
+        nullGetter(part) {
+          return "";
+        }
       });
     } catch (compileErr) {
       console.error('Docxtemplater compilation failed:', compileErr);
