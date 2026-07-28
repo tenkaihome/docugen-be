@@ -11,6 +11,7 @@
     "axios": "^1.18.1",
     "convertapi": "^1.15.0",
     "cors": "^2.8.5",
+    "docx-merger": "^1.2.2",
     "docxtemplater": "^3.42.0",
     "express": "^4.19.2",
     "firebase": "^12.16.0",

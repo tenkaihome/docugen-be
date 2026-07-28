@@ -742,6 +742,318 @@ app.post('/api/generate', upload.single('template'), async (req, res) => {
     res.status(500).json({ message: `Lỗi biên dịch trên Server: ${errorMessage}` });
   }
 });
+
+/**
+ * Helper function to merge XML contents inside A4 document bodies
+ */
+function mergeDocxFiles(buffers) {
+  if (buffers.length === 0) return null;
+  if (buffers.length === 1) return buffers[0];
+
+  const baseZip = new PizZip(buffers[0]);
+  let baseXml = baseZip.file("word/document.xml").asText();
+
+  const bodyStartTag = "<w:body>";
+  const bodyEndTag = "</w:body>";
+  
+  const baseBodyStartIndex = baseXml.indexOf(bodyStartTag);
+  const baseBodyEndIndex = baseXml.indexOf(bodyEndTag);
+  
+  if (baseBodyStartIndex === -1 || baseBodyEndIndex === -1) {
+    throw new Error("Invalid base document format");
+  }
+
+  let baseBodyContent = baseXml.substring(baseBodyStartIndex + bodyStartTag.length, baseBodyEndIndex);
+  
+  const sectPrStart = baseBodyContent.lastIndexOf("<w:sectPr");
+  const sectPrEnd = baseBodyContent.indexOf("</w:sectPr>", sectPrStart);
+  
+  let baseSectPr = "";
+  if (sectPrStart !== -1 && sectPrEnd !== -1) {
+    baseSectPr = baseBodyContent.substring(sectPrStart, sectPrEnd + "</w:sectPr>".length);
+    baseBodyContent = baseBodyContent.substring(0, sectPrStart);
+  }
+
+  let mergedContent = baseBodyContent;
+
+  if (baseSectPr) {
+    mergedContent += `<w:p><w:pPr>${baseSectPr}</w:pPr></w:p>`;
+  } else {
+    mergedContent += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+  }
+
+  for (let i = 1; i < buffers.length; i++) {
+    const nextZip = new PizZip(buffers[i]);
+    const nextXml = nextZip.file("word/document.xml").asText();
+    
+    const nextBodyStartIndex = nextXml.indexOf(bodyStartTag);
+    const nextBodyEndIndex = nextXml.indexOf(bodyEndTag);
+    
+    if (nextBodyStartIndex === -1 || nextBodyEndIndex === -1) continue;
+    
+    let nextBodyContent = nextXml.substring(nextBodyStartIndex + bodyStartTag.length, nextBodyEndIndex);
+    
+    const nextSectPrStart = nextBodyContent.lastIndexOf("<w:sectPr");
+    const nextSectPrEnd = nextBodyContent.indexOf("</w:sectPr>", nextSectPrStart);
+    
+    let nextSectPr = "";
+    if (nextSectPrStart !== -1 && nextSectPrEnd !== -1) {
+      nextSectPr = nextBodyContent.substring(nextSectPrStart, nextSectPrEnd + "</w:sectPr>".length);
+      nextBodyContent = nextBodyContent.substring(0, nextSectPrStart);
+    }
+    
+    mergedContent += nextBodyContent;
+    
+    if (i < buffers.length - 1) {
+      if (nextSectPr) {
+        mergedContent += `<w:p><w:pPr>${nextSectPr}</w:pPr></w:p>`;
+      } else {
+        mergedContent += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+      }
+    } else {
+      if (nextSectPr) {
+        mergedContent += nextSectPr;
+      } else if (baseSectPr) {
+        mergedContent += baseSectPr;
+      }
+    }
+  }
+
+  const finalXml = baseXml.substring(0, baseBodyStartIndex + bodyStartTag.length) + 
+                   mergedContent + 
+                   baseXml.substring(baseBodyEndIndex);
+                   
+  baseZip.file("word/document.xml", finalXml);
+  
+  return baseZip.generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE'
+  });
+}
+
+/**
+ * POST /api/generate-multiple
+ * Compiles multiple templates and merges them into a single DOCX.
+ */
+app.post('/api/generate-multiple', async (req, res) => {
+  let { tasks, productNameMappings } = req.body;
+
+  try {
+    if (typeof tasks === 'string') {
+      tasks = JSON.parse(tasks);
+    }
+    if (typeof productNameMappings === 'string') {
+      productNameMappings = JSON.parse(productNameMappings);
+    }
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ message: 'Danh sách công việc gộp trống.' });
+    }
+
+    const compiledBuffers = [];
+
+    for (const task of tasks) {
+      const { templateId, items: itemsToRender, section: sec } = task;
+      
+      let templateContent;
+
+      if (templateId === 'custom' || (templateId && templateId.startsWith('custom-'))) {
+        // Fetch from Firebase Realtime DB
+        const snapshot = await get(ref(db, `templates/${templateId}`));
+        if (snapshot.exists()) {
+          const template = snapshot.val();
+          if (template.fileBase64) {
+            templateContent = Buffer.from(template.fileBase64, 'base64');
+          } else {
+            return res.status(400).json({ message: `Tệp mẫu ${templateId} thiếu nội dung dữ liệu base64.` });
+          }
+        } else {
+          return res.status(404).json({ message: `Không tìm thấy tệp mẫu ${templateId} trên Firebase.` });
+        }
+      } else {
+        const templatePath = path.join(FRONTEND_TEMPLATES_DIR, `${templateId}.docx`);
+        if (!fs.existsSync(templatePath)) {
+          return res.status(404).json({ message: `Không tìm thấy file mẫu biểu tại đường dẫn: ${templatePath}` });
+        }
+        templateContent = fs.readFileSync(templatePath);
+      }
+
+      const zip = new PizZip(templateContent);
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+        nullGetter() {
+          return "";
+        }
+      });
+
+      const uppercaseSection = {
+        SO_DE_NGHI: sec.so_de_nghi || '',
+        TEN_KHACH_HANG: String(sec.ten_khach_hang || '').toUpperCase(),
+        NHA_CUNG_CAP_CHO: String(sec.nha_cung_cap_cho || '').toUpperCase(),
+        TEN_CONG_TRINH: String(sec.ten_cong_trinh || '').toUpperCase(),
+        NGAY_DE_NGHI: sec.ngay_de_nghi || '',
+        NGUOI_DE_NGHI: sec.nguoi_de_nghi || '',
+      };
+
+      const items = itemsToRender.map((item, idx) => {
+        const uppercaseItem = getUppercaseKeys(item);
+        const vnItemKeys = extendWithVnKeys(item);
+
+        const calculatedDate = calculateNgayXuatXuong(item, sec);
+        const calculatedSo = formatSoDocx(sec.so_de_nghi, item.hd_xlt_so);
+
+        const itemDateAndSoFields = {
+          'Ngày': calculatedDate.ngay,
+          'Ngay': calculatedDate.ngay,
+          'NGÀY': calculatedDate.ngay,
+          'NGAY': calculatedDate.ngay,
+          'Tháng': calculatedDate.thang,
+          'Thang': calculatedDate.thang,
+          'THÁNG': calculatedDate.thang,
+          'THANG': calculatedDate.thang,
+          'Năm': calculatedDate.nam,
+          'Nam': calculatedDate.nam,
+          'NĂM': calculatedDate.nam,
+          'NAM': calculatedDate.nam,
+
+          'Số': calculatedSo || '',
+          'số': calculatedSo || '',
+          'SỐ': calculatedSo || '',
+          'so': calculatedSo || '',
+          'SO': calculatedSo || '',
+          'Số HD': calculatedSo || '',
+          'Số HĐ': calculatedSo || '',
+          'Số hd': calculatedSo || '',
+          'Số hđ': calculatedSo || '',
+          'SỐ HD': calculatedSo || '',
+          'SỐ HĐ': calculatedSo || '',
+          'So HD': calculatedSo || '',
+          'SO HD': calculatedSo || '',
+        };
+
+        let itemProductFields = {};
+        const mappedProductName = matchPrefix(item.ma_hang, productNameMappings);
+        if (mappedProductName) {
+          itemProductFields = {
+            'Tên sản phẩm': mappedProductName,
+            'Tên Sản Phẩm': mappedProductName,
+            'TÊN SẢN PHẨM': mappedProductName,
+            'Tên sản phẩm / Product Name': mappedProductName,
+            'Tên sản phẩm/Product Name': mappedProductName,
+            'Product Name': mappedProductName,
+            'PRODUCT NAME': mappedProductName,
+          };
+        }
+
+        return {
+          ...item,
+          ...uppercaseItem,
+          ...vnItemKeys,
+          so_de_nghi: sec.so_de_nghi || item.so_de_nghi || '',
+          ten_khach_hang: sec.ten_khach_hang || item.ten_khach_hang || '',
+          nha_cung_cap_cho: sec.nha_cung_cap_cho || item.nha_cung_cap_cho || '',
+          ten_cong_trinh: sec.ten_cong_trinh || item.ten_cong_trinh || '',
+          ngay_de_nghi: sec.ngay_de_nghi || item.ngay_de_nghi || '',
+          nguoi_de_nghi: sec.nguoi_de_nghi || item.nguoi_de_nghi || '',
+          ...uppercaseSection,
+          ...getVnSectionKeys(sec),
+          ...itemDateAndSoFields,
+          ...itemProductFields,
+          page_break: idx < itemsToRender.length - 1,
+          page_break_xml: idx < itemsToRender.length - 1 ? '<w:br w:type="page"/>' : '',
+        };
+      });
+
+      const rootItem = itemsToRender[0] || {};
+      const uppercaseRootItem = getUppercaseKeys(rootItem);
+      const vnRootItem = extendWithVnKeys(rootItem);
+      const vnSection = getVnSectionKeys(sec);
+
+      let rootDateAndSoFields = {};
+      let rootProductFields = {};
+      if (rootItem && Object.keys(rootItem).length > 0) {
+        const firstItemCalculatedDate = calculateNgayXuatXuong(rootItem, sec);
+        const firstItemCalculatedSo = formatSoDocx(sec.so_de_nghi, rootItem.hd_xlt_so);
+        rootDateAndSoFields = {
+          'Ngày': firstItemCalculatedDate.ngay,
+          'Ngay': firstItemCalculatedDate.ngay,
+          'NGÀY': firstItemCalculatedDate.ngay,
+          'NGAY': firstItemCalculatedDate.ngay,
+          'Tháng': firstItemCalculatedDate.thang,
+          'Thang': firstItemCalculatedDate.thang,
+          'THÁNG': firstItemCalculatedDate.thang,
+          'THANG': firstItemCalculatedDate.thang,
+          'Năm': firstItemCalculatedDate.nam,
+          'Nam': firstItemCalculatedDate.nam,
+          'NĂM': firstItemCalculatedDate.nam,
+          'NAM': firstItemCalculatedDate.nam,
+
+          'Số': firstItemCalculatedSo || '',
+          'số': firstItemCalculatedSo || '',
+          'SỐ': firstItemCalculatedSo || '',
+          'so': firstItemCalculatedSo || '',
+          'SO': firstItemCalculatedSo || '',
+          'Số HD': firstItemCalculatedSo || '',
+          'Số HĐ': firstItemCalculatedSo || '',
+          'Số hd': firstItemCalculatedSo || '',
+          'Số hđ': firstItemCalculatedSo || '',
+          'SỐ HD': firstItemCalculatedSo || '',
+          'SỐ HĐ': firstItemCalculatedSo || '',
+          'So HD': firstItemCalculatedSo || '',
+          'SO HD': firstItemCalculatedSo || '',
+        };
+
+        const rootMappedProductName = matchPrefix(rootItem.ma_hang, productNameMappings);
+        if (rootMappedProductName) {
+          rootProductFields = {
+            'Tên sản phẩm': rootMappedProductName,
+            'Tên Sản Phẩm': rootMappedProductName,
+            'TÊN SẢN PHẨM': rootMappedProductName,
+            'Tên sản phẩm / Product Name': rootMappedProductName,
+            'Tên sản phẩm/Product Name': rootMappedProductName,
+            'Product Name': rootMappedProductName,
+            'PRODUCT NAME': rootMappedProductName,
+          };
+        }
+      }
+
+      doc.render({
+        items,
+        so_de_nghi: sec.so_de_nghi || '',
+        ten_khach_hang: sec.ten_khach_hang || '',
+        nha_cung_cap_cho: sec.nha_cung_cap_cho || '',
+        ten_cong_trinh: sec.ten_cong_trinh || '',
+        ngay_de_nghi: sec.ngay_de_nghi || '',
+        nguoi_de_nghi: sec.nguoi_de_nghi || '',
+        ...uppercaseSection,
+        ...vnSection,
+        ...rootDateAndSoFields,
+        ...rootItem,
+        ...uppercaseRootItem,
+        ...vnRootItem,
+        ...rootProductFields,
+      });
+
+      const buffer = doc.getZip().generate({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+      });
+
+      compiledBuffers.push(buffer);
+    }
+
+    const finalBuffer = mergeDocxFiles(compiledBuffers);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', 'attachment; filename=BaoCaoTongHop.docx');
+    res.send(finalBuffer);
+
+  } catch (err) {
+    console.error('Server generate-multiple error:', err);
+    res.status(500).json({ message: `Lỗi biên dịch gộp file trên Server: ${err.message}` });
+  }
+});
 /**dark */
 /**
  * GET /api/templates/:id/download
